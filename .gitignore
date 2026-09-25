@@ -13,6 +13,9 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Local agent/tool state
+.chatgpt2codex/
+
 # Benchmark outputs
 benchmark/results/
 *.csv
