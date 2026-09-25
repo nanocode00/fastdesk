@@ -45,11 +45,15 @@ class ScreenSampler:
         self,
         roi: tuple[int, int, int, int],
         *,
+        capture_backend: str,
         capture_interval_ms: float,
         history_seconds: float,
+        dxcam_output_idx: int,
     ) -> None:
         self.roi = roi
+        self.capture_backend = capture_backend
         self.capture_interval_s = capture_interval_ms / 1000.0
+        self.dxcam_output_idx = dxcam_output_idx
         # Fast capture can generate many samples. This cap is intentionally generous.
         max_samples = max(2_000, int(history_seconds * 2_000))
         self.samples: deque[LuminanceSample] = deque(maxlen=max_samples)
@@ -139,30 +143,62 @@ class ScreenSampler:
             return self.samples[-1]
 
     def _run(self) -> None:
-        left, top, width, height = self.roi
-        monitor = {"left": left, "top": top, "width": width, "height": height}
         try:
-            with mss.mss() as capture:
-                while not self.stop_event.is_set():
-                    frame = np.asarray(capture.grab(monitor), dtype=np.uint8)
-                    # mss returns BGRA. Mean luminance is sufficient for a black/white target,
-                    # and averaging B/G/R keeps this calculation cheap.
-                    mean_luminance = float(frame[:, :, :3].mean())
-                    sample = LuminanceSample(
-                        timestamp_ns=time.perf_counter_ns(),
-                        mean_luminance=mean_luminance,
-                    )
-                    with self.condition:
-                        self.samples.append(sample)
-                        self.recent_samples.append(sample)
-                        self.condition.notify_all()
-
-                    if self.capture_interval_s > 0:
-                        self.stop_event.wait(self.capture_interval_s)
+            if self.capture_backend == "dxcam":
+                self._run_dxcam()
+            else:
+                self._run_mss()
         except Exception as exc:  # pragma: no cover - environment-specific capture failure
             with self.condition:
                 self.error = exc
                 self.condition.notify_all()
+
+    def _record_frame(self, frame: np.ndarray) -> None:
+        mean_luminance = float(np.asarray(frame, dtype=np.uint8)[:, :, :3].mean())
+        sample = LuminanceSample(
+            timestamp_ns=time.perf_counter_ns(),
+            mean_luminance=mean_luminance,
+        )
+        with self.condition:
+            self.samples.append(sample)
+            self.recent_samples.append(sample)
+            self.condition.notify_all()
+
+    def _run_dxcam(self) -> None:
+        try:
+            import dxcam
+        except ImportError as exc:
+            raise RuntimeError(
+                "DXcam backend requested but dxcam is not installed; "
+                "run: pip install -r benchmark\\requirements.txt"
+            ) from exc
+
+        left, top, width, height = self.roi
+        region = (left, top, left + width, top + height)
+        with dxcam.create(
+            output_idx=self.dxcam_output_idx,
+            backend="dxgi",
+            processor_backend="numpy",
+            output_color="BGR",
+        ) as camera:
+            while not self.stop_event.is_set():
+                frame = camera.grab(region=region, new_frame_only=False)
+                if frame is not None:
+                    self._record_frame(frame)
+                if self.capture_interval_s > 0:
+                    self.stop_event.wait(self.capture_interval_s)
+
+    def _run_mss(self) -> None:
+        left, top, width, height = self.roi
+        monitor = {"left": left, "top": top, "width": width, "height": height}
+        capture_cls = getattr(mss, "MSS", None)
+        capture_context = capture_cls() if capture_cls is not None else mss.mss()
+        with capture_context as capture:
+            while not self.stop_event.is_set():
+                frame = np.asarray(capture.grab(monitor), dtype=np.uint8)
+                self._record_frame(frame)
+                if self.capture_interval_s > 0:
+                    self.stop_event.wait(self.capture_interval_s)
 
 
 class ControlClient:
@@ -337,6 +373,53 @@ def sleep_between(base_ms: float, jitter_ms: float) -> None:
     time.sleep(max(0.0, delay_ms) / 1000.0)
 
 
+def state_name(
+    mean_luminance: float,
+    *,
+    black_threshold: float,
+    white_threshold: float,
+) -> str:
+    state = classify_luminance(
+        mean_luminance,
+        black_threshold=black_threshold,
+        white_threshold=white_threshold,
+    )
+    if state == BLACK:
+        return "BLACK"
+    if state == WHITE:
+        return "WHITE"
+    return "MID"
+
+
+def run_capture_diagnostic(
+    control: ControlClient,
+    sampler: ScreenSampler,
+    *,
+    events: int,
+    hold_ms: float,
+    black_threshold: float,
+    white_threshold: float,
+) -> None:
+    print("\nCapture diagnostic: toggling the host and streaming ROI luminance.")
+    for event_id in range(1, events + 1):
+        _, _, target_state = control.toggle(event_id)
+        target_name = "WHITE" if target_state == WHITE else "BLACK"
+        print(f"\nToggle #{event_id}: host target={target_name}")
+        steps = 10
+        for step in range(steps):
+            time.sleep((hold_ms / steps) / 1000.0)
+            sample = sampler.latest_sample()
+            if sample is None:
+                print("  no capture sample")
+                continue
+            observed = state_name(
+                sample.mean_luminance,
+                black_threshold=black_threshold,
+                white_threshold=white_threshold,
+            )
+            print(f"  {step + 1:02d}: mean={sample.mean_luminance:6.1f} state={observed}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="FastDesk remote visual latency benchmark")
     parser.add_argument("--host", required=True, help="host-agent IP or hostname")
@@ -360,6 +443,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interval-ms", type=float, default=150.0)
     parser.add_argument("--jitter-ms", type=float, default=40.0)
     parser.add_argument(
+        "--capture-backend",
+        choices=("dxcam", "mss"),
+        default="dxcam",
+        help="screen capture backend; dxcam uses Windows Desktop Duplication",
+    )
+    parser.add_argument(
+        "--dxcam-output-idx",
+        type=int,
+        default=0,
+        help="DXcam output/monitor index (default: 0)",
+    )
+    parser.add_argument(
         "--capture-interval-ms",
         type=float,
         default=0.0,
@@ -368,6 +463,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--black-threshold", type=float, default=80.0)
     parser.add_argument("--white-threshold", type=float, default=175.0)
     parser.add_argument("--debounce-frames", type=int, default=2)
+    parser.add_argument(
+        "--diagnose-capture",
+        action="store_true",
+        help="toggle the host and print live ROI luminance instead of benchmarking",
+    )
+    parser.add_argument("--diagnose-events", type=int, default=4)
+    parser.add_argument("--diagnose-hold-ms", type=float, default=750.0)
     parser.add_argument(
         "--output",
         type=Path,
@@ -385,6 +487,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--black-threshold must be lower than --white-threshold")
     if args.debounce_frames < 1:
         raise SystemExit("--debounce-frames must be >= 1")
+    if args.dxcam_output_idx < 0:
+        raise SystemExit("--dxcam-output-idx must be >= 0")
+    if args.diagnose_events < 1 or args.diagnose_hold_ms <= 0:
+        raise SystemExit("diagnostic events/hold values must be positive")
     if args.interval_ms < 0 or args.jitter_ms < 0 or args.capture_interval_ms < 0:
         raise SystemExit("interval/jitter/capture interval values must be >= 0")
 
@@ -395,8 +501,10 @@ def main() -> int:
 
     sampler = ScreenSampler(
         args.roi,
+        capture_backend=args.capture_backend,
         capture_interval_ms=args.capture_interval_ms,
         history_seconds=max(5.0, args.visual_timeout * 3),
+        dxcam_output_idx=args.dxcam_output_idx,
     )
     sampler.start()
 
@@ -404,6 +512,7 @@ def main() -> int:
     rows: list[BenchmarkRow] = []
     try:
         sampler.wait_until_ready(args.timeout)
+        print(f"Capture backend: {args.capture_backend}")
         print(f"Initial ROI mean luminance: {sampler.latest_mean():.1f}")
         print(
             "Detection thresholds: "
@@ -413,6 +522,17 @@ def main() -> int:
         )
 
         control = ControlClient(args.host, args.port, args.timeout)
+
+        if args.diagnose_capture:
+            run_capture_diagnostic(
+                control,
+                sampler,
+                events=args.diagnose_events,
+                hold_ms=args.diagnose_hold_ms,
+                black_threshold=args.black_threshold,
+                white_threshold=args.white_threshold,
+            )
+            return 0
 
         next_event_id = 1
         for index in range(args.warmup):
