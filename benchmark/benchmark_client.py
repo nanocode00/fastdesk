@@ -46,12 +46,14 @@ class ScreenSampler:
         roi: tuple[int, int, int, int],
         *,
         capture_backend: str,
+        dxcam_api: str,
         capture_interval_ms: float,
         history_seconds: float,
         dxcam_output_idx: int,
     ) -> None:
         self.roi = roi
         self.capture_backend = capture_backend
+        self.dxcam_api = dxcam_api
         self.capture_interval_s = capture_interval_ms / 1000.0
         self.dxcam_output_idx = dxcam_output_idx
         # Fast capture can generate many samples. This cap is intentionally generous.
@@ -177,7 +179,7 @@ class ScreenSampler:
         region = (left, top, left + width, top + height)
         with dxcam.create(
             output_idx=self.dxcam_output_idx,
-            backend="dxgi",
+            backend=self.dxcam_api,
             processor_backend="numpy",
             output_color="BGR",
         ) as camera:
@@ -446,7 +448,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--capture-backend",
         choices=("dxcam", "mss"),
         default="dxcam",
-        help="screen capture backend; dxcam uses Windows Desktop Duplication",
+        help="screen capture backend (default: dxcam)",
+    )
+    parser.add_argument(
+        "--dxcam-api",
+        choices=("winrt", "dxgi"),
+        default="winrt",
+        help="DXcam capture API: winrt=Windows Graphics Capture, dxgi=Desktop Duplication",
     )
     parser.add_argument(
         "--dxcam-output-idx",
@@ -502,6 +510,7 @@ def main() -> int:
     sampler = ScreenSampler(
         args.roi,
         capture_backend=args.capture_backend,
+        dxcam_api=args.dxcam_api,
         capture_interval_ms=args.capture_interval_ms,
         history_seconds=max(5.0, args.visual_timeout * 3),
         dxcam_output_idx=args.dxcam_output_idx,
@@ -512,7 +521,12 @@ def main() -> int:
     rows: list[BenchmarkRow] = []
     try:
         sampler.wait_until_ready(args.timeout)
-        print(f"Capture backend: {args.capture_backend}")
+        backend_detail = (
+            f"{args.capture_backend}/{args.dxcam_api}"
+            if args.capture_backend == "dxcam"
+            else args.capture_backend
+        )
+        print(f"Capture backend: {backend_detail}")
         print(f"Initial ROI mean luminance: {sampler.latest_mean():.1f}")
         print(
             "Detection thresholds: "
