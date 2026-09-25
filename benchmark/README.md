@@ -83,8 +83,9 @@ pip install -r benchmark\requirements.txt
 
 `tkinter` is included with the normal Python.org Windows installer. The client installs both capture backends:
 
-- `dxcam` (default): Windows Desktop Duplication API, preferred for GPU-rendered remote desktop windows.
-- `mss` (fallback): available with `--capture-backend mss`.
+- `dxcam` (default): uses Windows Graphics Capture (`winrt`) by default.
+- `dxcam --dxcam-api dxgi`: Desktop Duplication fallback for DXcam.
+- `mss`: final fallback via `--capture-backend mss`.
 
 The host does not need the capture packages at runtime, but installing the same requirements on both machines keeps setup simple.
 
@@ -150,10 +151,10 @@ python benchmark\benchmark_client.py `
   --output benchmark\results\rustdesk-lan-1080p60.csv
 ```
 
-DXcam is the default capture backend. Before a full benchmark, verify that the ROI actually sees the remote black/white transitions:
+DXcam with the WinRT/Windows Graphics Capture API is the default capture path. Before a full benchmark, verify that the ROI actually sees the remote black/white transitions:
 
 ```powershell
-python benchmark\\benchmark_client.py `
+python benchmark\benchmark_client.py `
   --host 192.168.0.10 `
   --port 8765 `
   --roi 600,350,400,300 `
@@ -162,10 +163,21 @@ python benchmark\\benchmark_client.py `
 
 Diagnostic mode toggles the host four times and prints the live ROI mean luminance. A healthy run should alternate between values below the black threshold and above the white threshold.
 
+To compare against the older Desktop Duplication path, use:
+
+```powershell
+python benchmark\benchmark_client.py `
+  --host 192.168.0.10 `
+  --port 8765 `
+  --roi 600,350,400,300 `
+  --dxcam-api dxgi `
+  --diagnose-capture
+```
+
 If DXcam is unavailable or incompatible on a machine, use the MSS fallback:
 
 ```powershell
-python benchmark\\benchmark_client.py `
+python benchmark\benchmark_client.py `
   --host 192.168.0.10 `
   --port 8765 `
   --roi 600,350,400,300 `
@@ -185,6 +197,7 @@ Useful tuning flags:
 --jitter-ms 40
 --capture-interval-ms 0
 --capture-backend dxcam
+--dxcam-api winrt
 --dxcam-output-idx 0
 ```
 
