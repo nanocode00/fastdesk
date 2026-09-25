@@ -81,7 +81,12 @@ python -m pip install --upgrade pip
 pip install -r benchmark\requirements.txt
 ```
 
-`tkinter` is included with the normal Python.org Windows installer. The host does not need `mss` or `numpy` at runtime, but installing the same requirements on both machines keeps setup simple.
+`tkinter` is included with the normal Python.org Windows installer. The client installs both capture backends:
+
+- `dxcam` (default): Windows Desktop Duplication API, preferred for GPU-rendered remote desktop windows.
+- `mss` (fallback): available with `--capture-backend mss`.
+
+The host does not need the capture packages at runtime, but installing the same requirements on both machines keeps setup simple.
 
 ## 1. Start the desktop host agent
 
@@ -145,6 +150,30 @@ python benchmark\benchmark_client.py `
   --output benchmark\results\rustdesk-lan-1080p60.csv
 ```
 
+DXcam is the default capture backend. Before a full benchmark, verify that the ROI actually sees the remote black/white transitions:
+
+```powershell
+python benchmark\\benchmark_client.py `
+  --host 192.168.0.10 `
+  --port 8765 `
+  --roi 600,350,400,300 `
+  --diagnose-capture
+```
+
+Diagnostic mode toggles the host four times and prints the live ROI mean luminance. A healthy run should alternate between values below the black threshold and above the white threshold.
+
+If DXcam is unavailable or incompatible on a machine, use the MSS fallback:
+
+```powershell
+python benchmark\\benchmark_client.py `
+  --host 192.168.0.10 `
+  --port 8765 `
+  --roi 600,350,400,300 `
+  --capture-backend mss `
+  --warmup 2 `
+  --samples 5
+```
+
 Useful tuning flags:
 
 ```text
@@ -155,9 +184,11 @@ Useful tuning flags:
 --interval-ms 150
 --jitter-ms 40
 --capture-interval-ms 0
+--capture-backend dxcam
+--dxcam-output-idx 0
 ```
 
-`--capture-interval-ms 0` samples as fast as `mss` allows. If CPU use is excessive, try 1-4 ms.
+`--capture-interval-ms 0` samples as fast as the selected backend allows. If CPU use is excessive, try 1-4 ms.
 
 ## Output
 
