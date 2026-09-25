@@ -1,10 +1,29 @@
 # FastDesk benchmark harness
 
-This directory will contain the reproducible latency benchmark used before and during FastDesk development.
+This directory contains the **Windows supplemental benchmark harness** used during FastDesk development.
+
+The primary product benchmark is now Android-focused and is defined in [../docs/benchmark-plan.md](../docs/benchmark-plan.md). This harness remains useful for smoke tests, regression checks, and validating the synthetic host-toggle protocol.
+
+## Important limitation
+
+The current client captures a configured **screen ROI**, not an application window independently of the desktop composition.
+
+That means the ROI must:
+
+- point at the remote-video area;
+- remain visible on the client display;
+- not be covered by PowerShell or another window;
+- be rechecked if window placement, scaling, or monitor layout changes.
+
+If the ROI is covered, the benchmark can correctly capture the covering window while the user can still see RustDesk elsewhere on screen. Use `--diagnose-capture` before a measured run and confirm that BLACK/WHITE luminance values actually alternate.
+
+Future benchmark tooling should add window-bound capture and/or a snapshot preview so ordinary window placement does not affect the measurement.
 
 ## First benchmark target
 
 Measure visual update latency from a Windows laptop running a remote-desktop client to a Windows desktop host on the same LAN.
+
+This is an engineering/regression target, not the final Android user-perceived latency metric.
 
 The initial implementation will use two small Python programs:
 
