@@ -67,9 +67,42 @@ All products should be tested with the same machine pair, network, resolution, r
 
 - `host_agent.py`: Windows host pattern window + TCP control server.
 - `benchmark_client.py`: Windows client screen capture, transition detection, CSV output, and percentile report.
+- `network_logger.py`: timestamped ICMP RTT/loss logger for correlating RustDesk stalls with network conditions.
 - `core.py`: dependency-free detection/statistics helpers.
 - `requirements.txt`: client-side Python dependencies.
 - `tests/`: logic tests that can run without a GUI or screen capture.
+
+## Android/RustDesk network logger
+
+When recording an Android RustDesk session, run the logger on the Windows machine at the same time. Probe the same remote peer used by the session when possible; using an IP address avoids DNS lookup variability.
+
+Example:
+
+```powershell
+python benchmark\\network_logger.py 100.100.149.18 `
+  --interval-ms 250 `
+  --timeout-ms 200 `
+  --output benchmark\\results\\rustdesk-network.csv
+```
+
+Leave it running while Bandicam records the RustDesk quality monitor, then stop it with **Ctrl+C**. The CSV is flushed after every sample so an interrupted run still retains collected data.
+
+Each row contains:
+
+- local wall-clock timestamp for alignment with the screen recording;
+- monotonic timestamp for ordering;
+- RTT when ping output can be parsed;
+- probe process duration;
+- scheduler lag;
+- rolling packet-loss percentage;
+- absolute RTT change from the previous parsed sample;
+- skipped cadence intervals if a probe itself took longer than the requested interval.
+
+The default rolling window is 20 probes, which is 5 seconds at the default 250 ms cadence. The logger prints RTT p50/p95/p99, loss, and RTT-delta statistics when it stops.
+
+This logger is a **correlation tool**, not a direct measurement of RustDesk video transport. A RustDesk delay spike with simultaneous ICMP RTT/loss degradation strengthens the network-path hypothesis. A RustDesk delay spike while ICMP stays healthy instead points attention toward the application/video pipeline, Wi-Fi behavior not visible to ICMP, or Android decode/render backpressure.
+
+The default 200 ms ping timeout deliberately avoids allowing one slow probe to block several 250 ms sampling slots. Increase `--timeout-ms` only when measuring the magnitude of longer RTT spikes is more important than keeping the sampling cadence.
 
 ## Recommended layout
 
